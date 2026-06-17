@@ -4,6 +4,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { authClientJs } from "./authClient"
 import { WINDOW_LABELS } from "./profileUsage"
 
 export const profilePageHtml = `<!DOCTYPE html>
@@ -183,6 +184,7 @@ export const profilePageHtml = `<!DOCTYPE html>
 </div>
 </div>
 
+<script>${authClientJs}</script>
 <script>
 // Inlined from src/telemetry/profileUsage.ts. The TS source is unit-tested
 // (see profile-usage.test.ts) and the labels object is interpolated here so
@@ -241,8 +243,8 @@ var lastQuota = null;
 async function refresh() {
   try {
     var [profilesRes, quotaRes] = await Promise.all([
-      fetch('/profiles/list'),
-      fetch('/v1/usage/quota/all').catch(function () { return null; }),
+      window.meridianApi.apiFetch('/profiles/list'),
+      window.meridianApi.apiFetch('/v1/usage/quota/all').catch(function () { return null; }),
     ]);
     var profiles = await profilesRes.json();
     var quota = null;
@@ -429,7 +431,7 @@ function copyCmd(btn) {
 }
 
 async function switchProfile(id) {
-  const res = await fetch('/profiles/active', {
+  const res = await window.meridianApi.apiFetch('/profiles/active', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ profile: id })

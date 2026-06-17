@@ -4,6 +4,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { authClientJs } from "./authClient"
 
 export const dashboardHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -80,6 +81,7 @@ export const dashboardHtml = `<!DOCTYPE html>
 </style>
 </head>
 <body>
+<script>` + authClientJs + `</script>
 ` + profileBarHtml + `
 <div style="padding:24px">
 <h1>Meridian</h1>
@@ -151,9 +153,9 @@ async function refresh() {
   const w = $('#window').value;
   try {
     const [summary, reqs, logs] = await Promise.all([
-      fetch('/telemetry/summary?window=' + w).then(r => r.json()),
-      fetch('/telemetry/requests?limit=50&since=' + (Date.now() - Number(w))).then(r => r.json()),
-      fetch('/telemetry/logs?limit=200&since=' + (Date.now() - Number(w))).then(r => r.json()),
+      window.meridianApi.apiFetch('/telemetry/summary?window=' + w).then(r => r.json()),
+      window.meridianApi.apiFetch('/telemetry/requests?limit=50&since=' + (Date.now() - Number(w))).then(r => r.json()),
+      window.meridianApi.apiFetch('/telemetry/logs?limit=200&since=' + (Date.now() - Number(w))).then(r => r.json()),
     ]);
     render(summary, reqs, logs);
     $('#lastUpdate').textContent = 'Updated ' + new Date().toLocaleTimeString();

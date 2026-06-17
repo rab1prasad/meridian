@@ -5,6 +5,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "../../telemetry/profileBar"
+import { authClientJs } from "../../telemetry/authClient"
 
 export const pluginPageHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -140,6 +141,7 @@ export const pluginPageHtml = `<!DOCTYPE html>
 </style>
 </head>
 <body>
+<script>` + authClientJs + `</script>
 ` + profileBarHtml + `
 <div class="container">
   <a href="/" class="back-link">&#8592; Back to Meridian</a>
@@ -158,6 +160,7 @@ export const pluginPageHtml = `<!DOCTYPE html>
   <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
 </div>
 
+<script>${authClientJs}</script>
 <script>
 function esc(s) {
   if (s == null) return '';
@@ -168,7 +171,7 @@ function esc(s) {
 
 async function loadPlugins() {
   try {
-    var res = await fetch('/plugins/list');
+    var res = await window.meridianApi.apiFetch('/plugins/list');
     var data = await res.json();
     render(data.plugins || []);
   } catch {
@@ -186,7 +189,7 @@ async function reloadPlugins() {
   status.className = 'reload-status';
   status.textContent = '';
   try {
-    var res = await fetch('/plugins/reload', { method: 'POST' });
+    var res = await window.meridianApi.apiFetch('/plugins/reload', { method: 'POST' });
     var data = await res.json();
     if (data.success) {
       status.textContent = '\u2713 Reloaded';

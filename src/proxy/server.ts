@@ -47,11 +47,11 @@ import type { RequestMetric } from "../telemetry"
 import { classifyError, extractSdkTermination, formatSdkTermination, isStaleSessionError, isRateLimitError, isExtraUsageRequiredError, isExpiredTokenError } from "./errors"
 import { refreshOAuthToken, ensureFreshToken, startBackgroundRefresh, stopBackgroundRefresh, createPlatformCredentialStore, type CredentialStore } from "./tokenRefresh"
 import { checkPluginConfigured } from "./setup"
-import { mapModelToClaudeModel, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
+import { mapModelToClaudeModel, modelFamily, resolveClaudeExecutableAsync, resolveSdkModelDefaults, isClosedControllerError, getClaudeAuthStatusAsync, getAuthCacheInfo, getResolvedClaudeExecutableInfo, hasExtendedContext, stripExtendedContext, recordExtendedContextUnavailable } from "./models"
 import type { AnthropicSseEvent } from "./openai"
 import { translateOpenAiToAnthropic, translateAnthropicToOpenAi, buildModelList, createSseTranslator } from "./openai"
 import { extractAdvisorModel, getLastUserMessage, stripAdvisorTools } from "./messages"
-import { requireAuth, authEnabled } from "./auth"
+import { resolvePrincipal, authEnabled, getPrincipal, type AppEnv } from "./auth"
 import { detectAdapter } from "./adapters/detect"
 import { buildQueryOptions, type QueryContext } from "./query"
 import { normalizeEffort } from "./effort"
@@ -363,32 +363,65 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   let loadedPlugins: LoadedPlugin[] = []
   let pluginTransforms: ReturnType<typeof getActiveTransforms> = []
 
-  const app = new Hono()
+  const app = new Hono<AppEnv>()
 
   app.use("*", cors())
 
-  // Optional API key auth — protects all routes except / and /health
-  // when MERIDIAN_API_KEY is set. No-op when unset.
+  // Optional API key auth — protects all DATA/mutation routes when
+  // MERIDIAN_API_KEY is set. No-op when unset (open mode).
+  //
+  // Design (Feature 1): the HTML page SHELLS (/login, /telemetry, /settings,
+  // /profiles, /plugins, /admin) are intentionally PUBLIC so a browser can
+  // load them without a header; their data children (`/telemetry/*`,
+  // `/settings/*`, ...) stay gated, and the page's client JS attaches the
+  // stored key via `x-api-key` to every API call. In Hono, `/telemetry/*`
+  // does NOT match the bare `/telemetry`, so a shell is public simply by not
+  // appearing under any `/*` gate below.
   //
   // When adding a new sensitive prefix, add it here. The audit test in
-  // proxy-settings-auth.test.ts walks every registered route and fails CI
-  // if any non-public path responds with anything other than 401 to an
-  // unauthenticated request. That's the safety net against the next "we
-  // forgot to gate it" mistake (issue #477 was the catalyst — `/settings/*`
-  // was registered without going through requireAuth, so unauthenticated
-  // callers could mutate adapter SDK feature config via PATCH).
-  app.use("/v1/*", requireAuth)
-  app.use("/messages", requireAuth)
-  app.use("/telemetry/*", requireAuth)
-  app.use("/telemetry", requireAuth)
-  app.use("/metrics", requireAuth)
-  app.use("/profiles/*", requireAuth)
-  app.use("/profiles", requireAuth)
-  app.use("/plugins/*", requireAuth)
-  app.use("/plugins", requireAuth)
-  app.use("/settings/*", requireAuth)
-  app.use("/settings", requireAuth)
-  app.use("/auth/*", requireAuth)
+  // proxy-settings-auth.test.ts walks every registered route and fails CI if
+  // any non-public path responds with anything other than 401 to an
+  // unauthenticated request (issue #477 was the catalyst — `/settings/*` was
+  // registered without going through requireAuth). It also asserts the known
+  // public shells stay public, so data routes can't silently follow them out.
+  // Single deterministic auth gate. Rather than rely on Hono's prefix-wildcard
+  // vs. bare-path matching (`/settings/*` did not reliably let the bare
+  // `/settings` shell through), we explicitly allowlist the PUBLIC paths —
+  // landing, health, and the HTML page shells — and gate everything else.
+  //
+  // The shells load without a key; their client JS then attaches the stored
+  // key via x-api-key to every (gated) data/API call. /admin/* data routes
+  // additionally require the admin role. In open mode (no MERIDIAN_API_KEY)
+  // resolvePrincipal returns a synthetic admin, so this is a no-op.
+  const PUBLIC_PATHS = new Set([
+    "/", "/health",
+    "/login", "/telemetry", "/settings", "/profiles", "/plugins", "/admin",
+  ])
+  app.use("*", async (c, next) => {
+    const path = new URL(c.req.url).pathname
+    if (PUBLIC_PATHS.has(path)) return next()
+    const principal = resolvePrincipal(c)
+    if (!principal) {
+      return c.json(
+        { type: "error", error: { type: "authentication_error", message: "Invalid or missing API key" } },
+        401
+      )
+    }
+    c.set("principal", principal)
+    if (path.startsWith("/admin/") && principal.role !== "admin") {
+      // Read-only exception: `GET /admin/keys` is open to any authenticated
+      // user so the admin page can render the keys list in a disabled state
+      // for non-admins. Every mutation (POST/PATCH/POST-revoke) stays admin-only.
+      const isReadOnlyKeysList = path === "/admin/keys" && c.req.method === "GET"
+      if (!isReadOnlyKeysList) {
+        return c.json(
+          { type: "error", error: { type: "permission_error", message: "Admin privileges required" } },
+          403
+        )
+      }
+    }
+    return next()
+  })
 
   app.get("/", (c) => {
     // API clients get JSON, browsers get the landing page
@@ -439,6 +472,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
       // Hoist adapter detection before try so it's available in the catch block for telemetry
       const adapter = detectAdapter(c)
+      const recordMetric = (m: RequestMetric) => telemetryStore.record(m)
       try {
         const body = await c.req.json()
 
@@ -480,6 +514,29 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         const requestSource = c.req.header("x-meridian-source")?.slice(0, 64) || undefined
         const requestedModel = typeof body.model === "string" ? body.model : "sonnet"
         let model = mapModelToClaudeModel(requestedModel, authStatus?.subscriptionType, agentMode)
+
+        // Per-key model scoping (Feature 2). The principal is set by
+        // requireAuth (open mode → admin/["*"]). Enforce on the resolved
+        // family — `mapModelToClaudeModel` already collapses every request to
+        // opus/sonnet/haiku, so `opus[1m]` and `claude-opus-4-8` both check as
+        // "opus". This single chokepoint also covers /v1/chat/completions,
+        // which re-enters this handler via app.fetch() on the internal hop.
+        const principal = getPrincipal(c)
+        if (!principal.allowedModels.includes("*")) {
+          const family = modelFamily(model)
+          if (!principal.allowedModels.includes(family)) {
+            return c.json(
+              {
+                type: "error",
+                error: {
+                  type: "permission_error",
+                  message: `Model family '${family}' is not permitted for this API key`,
+                },
+              },
+              403
+            )
+          }
+        }
         const envOverrides = requestedModel.startsWith("claude-opus-")
           ? { ANTHROPIC_DEFAULT_OPUS_MODEL: requestedModel }
           : requestedModel.startsWith("claude-fable-")
@@ -1421,7 +1478,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
             isResume,
             passthrough
           )
-          telemetryStore.record({
+          recordMetric({
             requestId: requestMeta.requestId,
             timestamp: Date.now(),
             adapter: adapter.name,
@@ -2136,7 +2193,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                   isResume,
                   passthrough
                 )
-                telemetryStore.record({
+                recordMetric({
                   requestId: requestMeta.requestId,
                   timestamp: Date.now(),
                   adapter: adapter.name,
@@ -2290,7 +2347,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
                 // Record as success — the client got a usable response.
                 const recoverTotalMs = Date.now() - requestStartAt
                 const recoverQueueWaitMs = requestMeta.queueStartedAt - requestMeta.queueEnteredAt
-                telemetryStore.record({
+                recordMetric({
                   requestId: requestMeta.requestId,
                   timestamp: Date.now(),
                   adapter: adapter.name,
@@ -2340,7 +2397,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
               // (the success path's record call never runs when this catch fires).
               const streamErrTotalMs = Date.now() - requestStartAt
               const streamErrQueueWaitMs = requestMeta.queueStartedAt - requestMeta.queueEnteredAt
-              telemetryStore.record({
+              recordMetric({
                 requestId: requestMeta.requestId,
                 timestamp: Date.now(),
                 adapter: adapter.name,
@@ -2427,7 +2484,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         )
 
         const errorQueueWaitMs = requestMeta.queueStartedAt - requestMeta.queueEnteredAt
-        telemetryStore.record({
+        recordMetric({
           requestId: requestMeta.requestId,
           timestamp: Date.now(),
           adapter: adapter.name,
@@ -2676,6 +2733,107 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return c.html(pluginPageHtml)
   })
 
+  // --- Auth identity (Feature 1/2) ---
+  // Returns the resolved caller's role + scope. Gated by requireAuth via the
+  // /auth/* middleware, so the login page uses it to validate a pasted token
+  // and the nav uses it to render the Admin link only for admins.
+  app.get("/auth/whoami", (c) => {
+    const p = getPrincipal(c)
+    return c.json({
+      role: p.role,
+      label: p.label ?? null,
+      allowedModels: p.allowedModels,
+      keyId: p.keyId ?? null,
+    })
+  })
+
+  // --- Admin: scoped API key management (Feature 2) ---
+  // All /admin/* routes are gated by requireAuth + requireAdmin (registered
+  // in the middleware block above). The env master key is never stored, so it
+  // can't be listed/revoked here — it is the immutable bootstrap admin.
+  app.get("/admin/keys", (c) => {
+    const { listKeys } = require("./keyStore") as typeof import("./keyStore")
+    return c.json({ keys: listKeys() })
+  })
+
+  app.post("/admin/keys", async (c) => {
+    const { createKey } = require("./keyStore") as typeof import("./keyStore")
+    let body: Record<string, unknown>
+    try {
+      body = (await c.req.json()) as Record<string, unknown>
+    } catch {
+      return c.json({ error: "Invalid JSON in request body" }, 400)
+    }
+    // Admin panel only mints scoped USER keys — never another admin key.
+    // The env master key remains the sole admin bootstrap. Ignore any role
+    // in the body and force "user" so the panel can't escalate privilege.
+    const role = "user" as const
+    let expiresAt: number | null = null
+    if (typeof body.expiresInDays === "number" && body.expiresInDays > 0) {
+      expiresAt = Date.now() + body.expiresInDays * 24 * 60 * 60 * 1000
+    } else if (typeof body.expiresAt === "number") {
+      expiresAt = body.expiresAt
+    }
+    try {
+      const created = createKey({
+        label: typeof body.label === "string" ? body.label : "",
+        userId: typeof body.userId === "string" ? body.userId : "",
+        role,
+        allowedModels: Array.isArray(body.allowedModels) ? body.allowedModels : ["*"],
+        expiresAt,
+      })
+      return c.json({ id: created.id, key: created.plaintext, prefix: created.prefix }, 201)
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+    }
+  })
+
+  app.patch("/admin/keys/:id", async (c) => {
+    const { updateKey } = require("./keyStore") as typeof import("./keyStore")
+    const id = c.req.param("id")
+    let body: Record<string, unknown>
+    try {
+      body = (await c.req.json()) as Record<string, unknown>
+    } catch {
+      return c.json({ error: "Invalid JSON in request body" }, 400)
+    }
+    const patch: { allowedModels?: string[]; expiresAt?: number | null; label?: string } = {}
+    if (Array.isArray(body.allowedModels)) patch.allowedModels = body.allowedModels as string[]
+    if (typeof body.label === "string") patch.label = body.label
+    if (typeof body.expiresInDays === "number") {
+      patch.expiresAt = body.expiresInDays > 0 ? Date.now() + body.expiresInDays * 86_400_000 : null
+    } else if (body.expiresAt === null || typeof body.expiresAt === "number") {
+      patch.expiresAt = body.expiresAt as number | null
+    }
+    try {
+      const updated = updateKey(id, patch)
+      if (!updated) return c.json({ error: "Key not found" }, 404)
+      return c.json({ key: updated })
+    } catch (e) {
+      return c.json({ error: e instanceof Error ? e.message : String(e) }, 400)
+    }
+  })
+
+  app.post("/admin/keys/:id/revoke", (c) => {
+    const { revokeKey } = require("./keyStore") as typeof import("./keyStore")
+    const ok = revokeKey(c.req.param("id"))
+    if (!ok) return c.json({ error: "Key not found" }, 404)
+    return c.json({ success: true })
+  })
+
+  // --- Public page shells (Feature 1) ---
+  // Served without auth so a browser can load them; their client JS attaches
+  // the stored key to the gated data calls above.
+  app.get("/login", async (c) => {
+    const { loginPageHtml } = await import("../telemetry/loginPage")
+    return c.html(loginPageHtml)
+  })
+
+  app.get("/admin", async (c) => {
+    const { adminPageHtml } = await import("../telemetry/adminPage")
+    return c.html(adminPageHtml)
+  })
+
   app.post("/auth/refresh", async (c) => {
     const profile = resolveProfile(
       finalConfig.profiles,
@@ -2823,7 +2981,14 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
   app.get("/v1/models", async (c) => {
     const authStatus = await getClaudeAuthStatusAsync()
     const isMax = authStatus?.subscriptionType === "max"
-    return c.json({ object: "list", data: buildModelList(isMax) })
+    let data = buildModelList(isMax)
+    // Scope the listing to the caller's allowed families (admin/["*"] sees all)
+    // so a user key's model picker only shows what it can actually call.
+    const principal = getPrincipal(c)
+    if (!principal.allowedModels.includes("*")) {
+      data = data.filter((m) => principal.allowedModels.includes(modelFamily(m.id)))
+    }
+    return c.json({ object: "list", data })
   })
 
   // --- Subscription Quota ---

@@ -5,6 +5,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { authClientJs } from "./authClient"
 
 export const landingHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -72,6 +73,7 @@ export const landingHtml = `<!DOCTYPE html>
 </style>
 </head>
 <body>
+<script>` + authClientJs + `</script>
 ` + profileBarHtml + `
 <div class="container">
   <div class="header">
@@ -90,13 +92,14 @@ export const landingHtml = `<!DOCTYPE html>
   <div class="tagline">Harness Claude, your way.</div>
   <div id="content"><div style="color:var(--muted);padding:40px;text-align:center">Loading\u2026</div></div>
 </div>
+<script>${authClientJs}</script>
 <script>
 function ms(v){if(v==null||v===0)return '\u2014';return v<1000?v+'ms':(v/1000).toFixed(1)+'s'}
 function card(l,v,d,c){return '<div class="card"><div class="card-label">'+l+'</div><div class="card-value '+(c||'')+'">'+v+'</div>'+(d?'<div class="card-detail">'+d+'</div>':'')+'</div>'}
 
 async function refresh(){
   try{
-    const [health,stats]=await Promise.all([fetch('/health').then(r=>r.json()),fetch('/telemetry/summary?window=86400000').then(r=>r.json())]);
+    const [health,stats]=await Promise.all([window.meridianApi.apiFetch('/health').then(r=>r.json()),window.meridianApi.apiFetch('/telemetry/summary?window=86400000').then(r=>r.json())]);
     render(health,stats);
   }catch(e){document.getElementById('content').innerHTML='<div style="color:var(--red);padding:40px;text-align:center">Could not connect</div>'}
 }

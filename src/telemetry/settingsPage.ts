@@ -4,6 +4,7 @@
  */
 
 import { profileBarCss, profileBarHtml, profileBarJs, themeCss } from "./profileBar"
+import { authClientJs } from "./authClient"
 
 export const settingsPageHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -93,6 +94,7 @@ export const settingsPageHtml = `<!DOCTYPE html>
 </style>
 </head>
 <body>
+<script>${authClientJs}</script>
 ${profileBarHtml}
 <div class="content">
   <h1>SDK Features <span style="font-size:11px;padding:2px 8px;border-radius:10px;background:rgba(210,153,34,0.15);color:var(--yellow);vertical-align:middle;margin-left:8px">Experimental</span></h1>
@@ -138,7 +140,7 @@ const ADAPTER_LABELS = {
 let currentConfig = {};
 
 async function loadConfig() {
-  const res = await fetch('/settings/api/features');
+  const res = await window.meridianApi.apiFetch('/settings/api/features');
   currentConfig = await res.json();
   render();
 }
@@ -146,7 +148,7 @@ async function loadConfig() {
 async function saveFeature(adapter, key, value) {
   const patch = {};
   patch[key] = value;
-  await fetch('/settings/api/features/' + adapter, {
+  await window.meridianApi.apiFetch('/settings/api/features/' + adapter, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
@@ -156,7 +158,7 @@ async function saveFeature(adapter, key, value) {
 }
 
 async function resetAdapter(adapter) {
-  await fetch('/settings/api/features/' + adapter, { method: 'DELETE' });
+  await window.meridianApi.apiFetch('/settings/api/features/' + adapter, { method: 'DELETE' });
   await loadConfig();
   showSaved();
 }

@@ -106,6 +106,8 @@ export const profileBarHtml = `
     <a href="/profiles" id="nav-profiles">Profiles</a>
     <a href="/telemetry" id="nav-telemetry">Telemetry</a>
     <a href="/plugins" id="nav-plugins">Plugins</a>
+    <a href="/admin" id="nav-admin" style="display:none">Admin</a>
+    <a href="#" id="nav-logout" style="display:none">Logout</a>
   </div>
 </div>
 `
@@ -116,7 +118,15 @@ export const profileBarJs = `
   var profileSelect = document.getElementById('meridianProfileSelect');
   var profileType = document.getElementById('meridianProfileType');
   var profileStatus = document.getElementById('meridianProfileStatus');
+  var profileLabel = document.querySelector('.meridian-profile-bar .profile-label');
+  var adminLink = document.getElementById('nav-admin');
+  var logoutLink = document.getElementById('nav-logout');
   var statusTimeout;
+  var hasProfiles = false;
+
+  // Auth client (Feature 1). Falls back to plain fetch if not loaded.
+  var api = window.meridianApi;
+  function af(path, opts) { return api ? api.apiFetch(path, opts) : fetch(path, opts); }
 
   // Highlight active nav link
   var path = location.pathname;
@@ -129,23 +139,37 @@ export const profileBarJs = `
 
   function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+  // Keep the bar visible whenever there's something to show: a profile picker,
+  // an admin's Admin link, or a logged-in user's Logout. Hide the profile
+  // picker controls when no profiles are configured.
+  function syncVisibility() {
+    var showLogout = !!(api && api.getToken());
+    var showAdmin = adminLink && adminLink.style.display !== 'none';
+    if (logoutLink) logoutLink.style.display = showLogout ? '' : 'none';
+    var showPicker = hasProfiles;
+    if (profileLabel) profileLabel.style.display = showPicker ? '' : 'none';
+    profileSelect.style.display = showPicker ? '' : 'none';
+    profileType.style.display = showPicker ? '' : 'none';
+    if (hasProfiles || showAdmin || showLogout) profileBar.classList.add('visible');
+    else profileBar.classList.remove('visible');
+  }
+
   function loadProfiles() {
-    fetch('/profiles/list').then(function(r) { return r.json(); }).then(function(data) {
-      if (!data.profiles || data.profiles.length === 0) {
-        profileBar.classList.remove('visible');
-        return;
+    af('/profiles/list').then(function(r) { return r.json(); }).then(function(data) {
+      hasProfiles = !!(data.profiles && data.profiles.length > 0);
+      if (hasProfiles) {
+        var current = data.profiles.find(function(p) { return p.isActive; });
+        profileSelect.innerHTML = data.profiles.map(function(p) {
+          return '<option value="' + esc(p.id) + '"' + (p.isActive ? ' selected' : '') + '>' + esc(p.id) + '</option>';
+        }).join('');
+        if (current) profileType.textContent = current.type;
       }
-      profileBar.classList.add('visible');
-      var current = data.profiles.find(function(p) { return p.isActive; });
-      profileSelect.innerHTML = data.profiles.map(function(p) {
-        return '<option value="' + esc(p.id) + '"' + (p.isActive ? ' selected' : '') + '>' + esc(p.id) + '</option>';
-      }).join('');
-      if (current) profileType.textContent = current.type;
+      syncVisibility();
     }).catch(function() {});
   }
 
   profileSelect.onchange = function() {
-    fetch('/profiles/active', {
+    af('/profiles/active', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ profile: profileSelect.value })
@@ -158,6 +182,16 @@ export const profileBarJs = `
       }
     }).catch(function() {});
   };
+
+  if (logoutLink) logoutLink.onclick = function(e) { e.preventDefault(); if (api) api.logout(); };
+
+  // Role-aware Admin link — only admins (incl. open mode) see it.
+  if (api) {
+    api.whoami().then(function(who) {
+      if (who && who.role === 'admin' && adminLink) adminLink.style.display = '';
+      syncVisibility();
+    }).catch(function() {});
+  }
 
   loadProfiles();
   setInterval(loadProfiles, 10000);

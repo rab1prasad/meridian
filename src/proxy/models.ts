@@ -25,6 +25,26 @@ const STUB_SIZE_THRESHOLD = 4096
 export type ClaudeModel = "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]" | "haiku" | "fable" | "fable[1m]"
 
 /**
+ * The model families Meridian recognizes. Every requested model string
+ * collapses to one of these (see `mapModelToClaudeModel` / `modelFamily`).
+ * Reused by the per-key "allowed models" scoping in `keyStore.ts` and the
+ * scope-enforcement check in `server.ts` so there is a single source of truth.
+ */
+export const MODEL_FAMILIES = ["opus", "sonnet", "haiku"] as const
+export type ModelFamily = (typeof MODEL_FAMILIES)[number]
+
+/**
+ * Collapse a model string or `ClaudeModel` alias (e.g. "opus[1m]",
+ * "claude-opus-4-8") to its base family. Mirrors the precedence in
+ * `mapModelToClaudeModel`: haiku wins, then opus, else sonnet.
+ */
+export function modelFamily(model: string): ModelFamily {
+  if (model.includes("haiku")) return "haiku"
+  if (model.includes("opus")) return "opus"
+  return "sonnet"
+}
+
+/**
  * Current canonical pins for the `sonnet`/`opus`/`haiku` SDK aliases.
  *
  * mapModelToClaudeModel collapses every requested model to one of these
