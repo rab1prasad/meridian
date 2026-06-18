@@ -116,10 +116,14 @@ describe("keyStore.normalizeAllowedModels", () => {
     expect(ks.normalizeAllowedModels(["sonnet", "SONNET", "opus", "bogus"])).toEqual(["opus", "sonnet"])
   })
 
-  it("throws when no valid family is present", async () => {
+  it("returns [] for an empty array — keys without model access are allowed", async () => {
+    const ks = await freshStore()
+    expect(ks.normalizeAllowedModels([])).toEqual([])
+  })
+
+  it("throws when non-empty input contains no recognized families", async () => {
     const ks = await freshStore()
     expect(() => ks.normalizeAllowedModels(["bogus"])).toThrow()
-    expect(() => ks.normalizeAllowedModels([])).toThrow()
     expect(() => ks.normalizeAllowedModels("sonnet" as unknown)).toThrow()
   })
 })

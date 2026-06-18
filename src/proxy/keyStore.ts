@@ -122,19 +122,27 @@ export function hashKey(plaintext: string): string {
 /**
  * Validate + canonicalize an allowed-models list. Accepts `["*"]` (or any
  * list containing "*") → `["*"]`. Otherwise keeps only known families,
- * deduped and ordered. An empty/invalid result throws — a key must permit
- * at least one family.
+ * deduped and ordered.
+ *
+ * Empty input is valid and returns `[]` — the key has no model access. This
+ * supports keys that only need to call non-model endpoints. The scope check
+ * in `server.ts` treats `[]` as "deny every family" (since `includes("*")`
+ * is false and no family matches), exactly the intended behavior.
+ *
+ * Non-empty input that contains no recognized families (e.g. `["bogus"]`)
+ * still throws — that's a typed-it-wrong signal, not a "no access" intent.
  */
 export function normalizeAllowedModels(input: unknown): string[] {
   if (!Array.isArray(input)) {
     throw new Error("allowedModels must be an array")
   }
+  if (input.length === 0) return []
   const raw = input.map((v) => String(v).toLowerCase().trim())
   if (raw.includes(ALLOW_ALL_MODELS)) return [ALLOW_ALL_MODELS]
   const families = MODEL_FAMILIES.filter((f) => raw.includes(f))
   if (families.length === 0) {
     throw new Error(
-      `allowedModels must be "*" or include at least one of: ${MODEL_FAMILIES.join(", ")}`
+      `allowedModels must be "*", [], or include at least one of: ${MODEL_FAMILIES.join(", ")}`
     )
   }
   return [...families]

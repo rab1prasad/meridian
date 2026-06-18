@@ -185,10 +185,13 @@ export const profileBarJs = `
 
   if (logoutLink) logoutLink.onclick = function(e) { e.preventDefault(); if (api) api.logout(); };
 
-  // Role-aware Admin link — only admins (incl. open mode) see it.
+  // Admin link is visible to any authenticated user. The panel itself is
+  // read-only for non-admins (create/revoke disabled in the UI) and the server
+  // enforces 403 on mutations, so a user can browse the key list but not change
+  // it. Admins get the fully editable panel.
   if (api) {
     api.whoami().then(function(who) {
-      if (who && who.role === 'admin' && adminLink) adminLink.style.display = '';
+      if (who && adminLink) adminLink.style.display = '';
       syncVisibility();
     }).catch(function() {});
   }

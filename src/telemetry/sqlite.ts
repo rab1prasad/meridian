@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS metrics (
   timestamp            INTEGER NOT NULL,
   adapter              TEXT,
   request_source       TEXT,
+  auth_user            TEXT,
   model                TEXT    NOT NULL,
   request_model        TEXT,
   mode                 TEXT    NOT NULL,
@@ -50,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_metrics_session_success ON metrics(sdk_session_id
  */
 const METRICS_MIGRATIONS = [
   "ALTER TABLE metrics ADD COLUMN request_source TEXT",
+  "ALTER TABLE metrics ADD COLUMN auth_user TEXT",
 ]
 
 const LOGS_SCHEMA = `
@@ -94,7 +96,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
 
     this.insertStmt = db.prepare(`
       INSERT INTO metrics (
-        request_id, timestamp, adapter, request_source, model, request_model, mode,
+        request_id, timestamp, adapter, request_source, auth_user, model, request_model, mode,
         is_resume, is_passthrough, lineage_type,
         has_deferred_tools, deferred_tool_count, tool_count, discovered_tools, session_discovered_count,
         message_count, sdk_session_id,
@@ -103,7 +105,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
         input_tokens, output_tokens, cache_read_input_tokens,
         cache_creation_input_tokens, cache_hit_rate
       ) VALUES (
-        @requestId, @timestamp, @adapter, @requestSource, @model, @requestModel, @mode,
+        @requestId, @timestamp, @adapter, @requestSource, @user, @model, @requestModel, @mode,
         @isResume, @isPassthrough, @lineageType,
         @hasDeferredTools, @deferredToolCount, @toolCount, @discoveredTools, @sessionDiscoveredCount,
         @messageCount, @sdkSessionId,
@@ -124,6 +126,7 @@ class SqliteTelemetryStore implements ITelemetryStore {
         timestamp: metric.timestamp,
         adapter: metric.adapter ?? null,
         requestSource: metric.requestSource ?? null,
+        user: metric.user ?? null,
         model: metric.model,
         requestModel: metric.requestModel ?? null,
         mode: metric.mode,
@@ -311,6 +314,7 @@ function rowToMetric(r: Record<string, unknown>): RequestMetric {
     timestamp: r.timestamp as number,
     adapter: (r.adapter as string) ?? undefined,
     requestSource: (r.request_source as string) ?? undefined,
+    user: (r.auth_user as string) ?? undefined,
     model: r.model as string,
     requestModel: (r.request_model as string) ?? undefined,
     mode: r.mode as RequestMetric["mode"],

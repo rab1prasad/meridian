@@ -472,7 +472,12 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
     return withClaudeLogContext({ requestId: requestMeta.requestId, endpoint: requestMeta.endpoint }, async () => {
       // Hoist adapter detection before try so it's available in the catch block for telemetry
       const adapter = detectAdapter(c)
-      const recordMetric = (m: RequestMetric) => telemetryStore.record(m)
+      // Username for telemetry attribution — assigned once the principal
+      // resolves (below). recordMetric stamps it onto every metric so all
+      // record() sites (success, recover, error, outer catch) carry the user
+      // without duplicating the field in each literal.
+      let principalUser: string | undefined
+      const recordMetric = (m: RequestMetric) => telemetryStore.record({ ...m, user: principalUser })
       try {
         const body = await c.req.json()
 
@@ -522,6 +527,7 @@ export function createProxyServer(config: Partial<ProxyConfig> = {}): ProxyServe
         // "opus". This single chokepoint also covers /v1/chat/completions,
         // which re-enters this handler via app.fetch() on the internal hop.
         const principal = getPrincipal(c)
+        principalUser = principal.user
         if (!principal.allowedModels.includes("*")) {
           const family = modelFamily(model)
           if (!principal.allowedModels.includes(family)) {

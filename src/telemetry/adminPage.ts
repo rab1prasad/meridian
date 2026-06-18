@@ -62,7 +62,7 @@ export const adminPageHtml = `<!DOCTYPE html>
     <div id="readOnlyBanner" style="display:none">
       <div class="card" style="border-color: var(--yellow); background: rgba(210,153,34,0.06); padding: 12px 16px; margin-bottom: 16px;">
         <strong style="color:var(--yellow)">Read-only view.</strong>
-        <span style="color:var(--muted); font-size: 13px; margin-left: 6px;">You can see existing keys, but creating and revoking keys requires the admin (master) key.</span>
+        <span style="color:var(--muted); font-size: 13px; margin-left: 6px;">You can see existing keys, but creating and revoking keys requires the admin key.</span>
       </div>
     </div>
 
@@ -127,7 +127,9 @@ export const adminPageHtml = `<!DOCTYPE html>
         if (document.getElementById('m-all').checked) return ['*'];
         var out = [];
         document.querySelectorAll('.m-fam').forEach(function(cb) { if (cb.checked) out.push(cb.value); });
-        return out.length ? out : ['*'];
+        // Honors the admin's explicit choice — no silent fallback to ["*"].
+        // The submit handler refuses creation when this is empty.
+        return out;
       }
       // "All" and specific families are mutually exclusive in the UI.
       document.getElementById('m-all').onchange = function() {
@@ -140,10 +142,23 @@ export const adminPageHtml = `<!DOCTYPE html>
       function render(keys) {
         if (!keys.length) { keysBody.innerHTML = ''; noKeys.style.display = 'block'; return; }
         noKeys.style.display = 'none';
+        // Sort: active → expired → revoked. Array.sort is stable in modern
+        // engines (ES2019+), so creation order from the server (newest first)
+        // is preserved within each bucket.
+        function bucket(k) {
+          if (k.revoked) return 2;
+          if (k.expiresAt && k.expiresAt <= Date.now()) return 1;
+          return 0;
+        }
+        keys = keys.slice().sort(function(a, b) { return bucket(a) - bucket(b); });
         keysBody.innerHTML = keys.map(function(k) {
           var status = k.revoked ? '<span class="badge revoked">revoked</span>'
             : (k.expiresAt && k.expiresAt <= Date.now() ? '<span class="badge expired">expired</span>' : '');
-          var models = (k.allowedModels || []).join(', ');
+          // Empty allowedModels is valid — keys that don't need model access.
+          // Falls back to "(none)" so the table doesn't render a blank cell.
+          var models = (k.allowedModels && k.allowedModels.length)
+            ? k.allowedModels.join(', ')
+            : '(none)';
           var actions = readOnly || k.revoked
             ? ''
             : '<button class="danger" data-revoke="' + esc(k.id) + '">Revoke</button>';
@@ -212,6 +227,9 @@ export const adminPageHtml = `<!DOCTYPE html>
         var unit = document.getElementById('f-expiry-unit').value;
         var userId = document.getElementById('f-user').value.trim();
         if (!userId) { err.textContent = 'User ID is required.'; return; }
+        // Empty selection is allowed — for keys that don't need model access
+        // (e.g. they only call non-model endpoints). The server accepts [].
+        var models = selectedModels();
         // Role is always "user" (server enforces it too). Label is an optional
         // grouping tag; it falls back to the user ID when left blank. Admins can
         // mint multiple keys for the same user, each with its own label.
@@ -219,7 +237,7 @@ export const adminPageHtml = `<!DOCTYPE html>
         var body = {
           label: label,
           userId: userId,
-          allowedModels: selectedModels()
+          allowedModels: models
         };
         if (amount > 0) {
           var msPer = unit === 'hours' ? 3600000 : 86400000;

@@ -25,6 +25,10 @@ export interface RequestMetric {
    *  memory-extract fork vs. subagent-scout). Truncated to 64 chars. */
   requestSource?: string
 
+  /** Username that authenticated this request — the API key's userId/label.
+   *  "master" for the env key, "open" in open mode, undefined pre-auth. */
+  user?: string
+
   /** Model used for SDK query (sonnet, opus, haiku, sonnet[1m], etc.) */
   model: string
 
